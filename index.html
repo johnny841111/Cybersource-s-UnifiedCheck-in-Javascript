@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Unified_Checkout</title>
+        <meta charset="UTF-8">
+    </head>
+    <body>
+        <input type="text" id="price">
+        <button onclick="">金額</button>
+        <div id="SDK_Container"> </div>
+        <div id="result" ></div>
+        <script>
+             async function loadCaptureContext(){
+                try{
+                    let price = document.getElementById("price").value;//取得金額
+                    const response = await fetch("/get-capture-context", {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                            },
+                            body: JSON.stringify({price: price}),
+                        });
+                    if (!response.ok) {
+                        throw new Error("HTTP error " + response.status);
+                    }
+                    return await response.json();
+                }
+                catch(error){
+                    console.error(error);
+                    throw error;
+                }
+             }
+
+             async function authorizePayment(Token) {
+                try{
+                    const response = await fetch("/authorize-payment", {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                            },
+                            body: JSON.stringify(Token),
+                        });
+                    if (!response.ok) {
+                        throw new Error("HTTP error " + response.status);
+                    }
+                    let result = await response.json();
+                    return result;
+                }
+                catch(error){
+                    return{error:error.message};
+                }
+             }
+
+             async function loadCheckout(){
+                try{
+                    let data= await loadCaptureContext();
+                    if(data==false || data.clinetLibraary==false){
+                        console.error("Error in loading Capture Context");
+                        return;
+                    } 
+                    const sdkUrl = data.clientLibrary + "?captureContext=" + encodeURIComponent(data.captureContext);//組合成完整的URL
+                    const script = document.createElement("script");//創建script標籤
+                    script.src = sdkUrl;//設定script標籤的src屬性
+                    
+                    if(typeof Accept==="undefined"){ //檢查Accept是否存在，Accept是一個全域變數
+                        console.error("Accept is not defined");
+                        return;
+                    }
+                    const acceptObj = await Accept(data.captureContext);//呼叫Accept函數，並傳入captureContext
+                    const paymentUI = await acceptObj.unifiedPayments();//呼叫unifiedPayments函數
+
+                    const transientToken = await paymentUI.show({ containers: { paymentSelection: "#SDK_Container" } });//呼叫show函數，並傳入paymentSelection的容器
+
+
+                }
+             }
+
+
+
+        </script>
+    </body>
+</html>
