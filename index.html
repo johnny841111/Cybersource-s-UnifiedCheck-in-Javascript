@@ -6,7 +6,7 @@
     </head>
     <body>
         <input type="text" id="price">
-        <button onclick="">金額</button>
+        <button onclick="loadCheckout()">金額</button>
         <div id="SDK_Container"> </div>
         <div id="result" ></div>
         <script>
@@ -71,7 +71,14 @@
 
                     const transientToken = await paymentUI.show({ containers: { paymentSelection: "#SDK_Container" } });//呼叫show函數，並傳入paymentSelection的容器
 
+                    const authResult = await authorizePayment(transientToken);//呼叫authorizePayment函數，並傳入transientToken，取得授權結果
+                    document.getElementById("result").innerText = JSON.stringify(authResult);//將授權結果顯示在result元素上
 
+
+
+                }
+                catch(error){
+                    console.error("付款款失敗",error);
                 }
              }
 
