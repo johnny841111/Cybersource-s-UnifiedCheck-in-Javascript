@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>Unified Checkout 測試</title>
+</head>
+<body>
+  <h2>請輸入金額進行付款</h2>
+  <input type="text" id="price" placeholder="請輸入金額">
+  <button id="checkoutButton">送出付款</button>
+  
+  <!-- SDK 元件容器 -->
+  <div id="buttonContainer"></div>
+  <div id="result"></div>
+  
+  <script>
+    // 解析 JWT 字串，取得 payload 資料
+    function parseJwt(token) {
+      try {
+        const base64Url = token.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(atob(base64).split('').map(c =>
+          '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)
+        ).join(''));
+        return JSON.parse(jsonPayload);
+      } catch (error) {
+        console.error("解析 JWT 失敗:", error);
+        return null;
+      }
+    }
+    
+    // 從後端取得 capture context JWT（根據輸入金額產生不同內容）
+    async function loadCaptureContext() {
+      try {
+        const price = document.getElementById("price").value;
+        const response = await fetch("/post-capture-context", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ price })
+        });
+        if (!response.ok) {
+          throw new Error("HTTP error " + response.status);
+        }
+        const captureContextJWT =  await response.text();
+        console.log("取得 capture context JWT:", captureContextJWT);
+        // 檢查是否包含至少兩個點（.），代表有 header.payload.signature
+        if (captureContextJWT.split('.').length !== 3) {
+          throw new Error("回傳的 capture context 格式錯誤");
+        }
+        console.log("解析後的 payload:", parseJwt(captureContextJWT));
+        return captureContextJWT;
+      } catch (error) {
+        console.error("取得 capture context 失敗:", error);
+        throw error;
+      }
+    }
+    
+    // 根據 capture context JWT 中的資訊動態載入 SDK script
+    function loadSDKFromCaptureContext(captureContextJWT) {
+      const jwtPayload = parseJwt(captureContextJWT);
+      if (!jwtPayload || !jwtPayload.ctx || !jwtPayload.ctx[0] || !jwtPayload.ctx[0].data) {
+        console.error("capture context JWT 格式錯誤或缺少必要欄位");
+        return Promise.reject(new Error("Invalid capture context JWT"));
+      }
+      const clientLibraryUrl = jwtPayload.ctx[0].data.clientLibrary;
+      const integrityValue = jwtPayload.ctx[0].data.clientLibraryIntegrity;
+      return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = clientLibraryUrl;
+        script.integrity = integrityValue;
+        script.crossOrigin = "anonymous";
+        script.onload = () => {
+          console.log("SDK script 載入成功");
+          resolve();
+        };
+        script.onerror = () => reject(new Error("載入 SDK script 失敗"));
+        document.head.appendChild(script);
+      });
+    }
+    
+    // 主流程：取得 capture context、載入 SDK、初始化並呈現付款元件
+    async function loadCheckout() {
+      try {
+        // 依金額取得 capture context JWT
+        const captureContextJWT = await loadCaptureContext();
+        // 透過 JWT 解析出 clientLibrary 與 integrity 值，動態載入 SDK script
+        await loadSDKFromCaptureContext(captureContextJWT);
+        
+        // 確認 SDK 載入後全域函式 Accept 是否存在
+        if (typeof Accept === "undefined") {
+          console.error("SDK 載入後找不到 Accept() 函式");
+          document.getElementById("result").innerText = "SDK 載入後找不到 Accept() 函式";
+          return;
+        }
+        
+        // 使用 capture context 初始化 Accept 並建立 Unified Payments 物件，然後將付款元件渲染到 #buttonContainer 中
+        Accept(captureContextJWT)
+          .then(accept => accept.unifiedPayments())
+          .then(up => up.show({ containers: { paymentSelection: "#buttonContainer" } }))
+          .then(transientToken => {
+            console.log("取得 transient token:", transientToken);
+            document.getElementById("result").innerText = "Transient Token: " + transientToken;
+            // 你可以在此呼叫後端授權 API，傳送 transientToken 進行後續處理
+          })
+          .catch(error => {
+            console.error("付款流程發生錯誤:", error);
+            document.getElementById("result").innerText = "付款流程錯誤: " + error.message;
+          });
+      } catch (error) {
+        console.error("loadCheckout 發生錯誤:", error);
+        document.getElementById("result").innerText = "錯誤: " + error.message;
+      }
+    }
+    
+    document.getElementById("checkoutButton").addEventListener("click", loadCheckout);
+  </script>
+</body>
+</html>
