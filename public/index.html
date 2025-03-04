@@ -2,19 +2,23 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
-  <title>Unified Checkout 測試</title>
+  <title>3DS 驗證與授權測試</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    #result { margin-top: 20px; white-space: pre-wrap; }
+    #challengeContainer { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 400px; height: 500px; border: 1px solid #ccc; }
+  </style>
 </head>
 <body>
   <h2>請輸入金額進行付款</h2>
-  <input type="text" id="price" placeholder="請輸入金額">
+  <input type="text" id="price" placeholder="請輸入金額例如 100">
   <button id="checkoutButton">送出付款</button>
   
-  <!-- SDK 元件容器 -->
   <div id="buttonContainer"></div>
+  <div id="challengeContainer"><iframe id="challengeIframe" width="100%" height="100%"></iframe></div>
   <div id="result"></div>
   
   <script>
-    // 解析 JWT 字串，取得 payload 資料
     function parseJwt(token) {
       try {
         const base64Url = token.split('.')[1];
@@ -29,85 +33,111 @@
       }
     }
     
-    // 從後端取得 capture context JWT（根據輸入金額產生不同內容）
-    async function loadCaptureContext() {
-      try {
-        const price = document.getElementById("price").value;
-        const response = await fetch("/post-capture-context", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ price })
-        });
-        if (!response.ok) {
-          throw new Error("HTTP error " + response.status);
-        }
-        const captureContextJWT =  await response.text();
-        console.log("取得 capture context JWT:", captureContextJWT);
-        // 檢查是否包含至少兩個點（.），代表有 header.payload.signature
-        if (captureContextJWT.split('.').length !== 3) {
-          throw new Error("回傳的 capture context 格式錯誤");
-        }
-        console.log("解析後的 payload:", parseJwt(captureContextJWT));
-        return captureContextJWT;
-      } catch (error) {
-        console.error("取得 capture context 失敗:", error);
-        throw error;
-      }
+    async function loadCaptureContext(price) {
+      console.log("請求 capture context，金額:", price);
+      const response = await fetch("/post-capture-context", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ price })
+      });
+      if (!response.ok) throw new Error("HTTP error " + response.status);
+      const data = await response.text();
+      console.log("收到 capture context JWT:", data);
+      return data;
     }
     
-    // 根據 capture context JWT 中的資訊動態載入 SDK script
     function loadSDKFromCaptureContext(captureContextJWT) {
       const jwtPayload = parseJwt(captureContextJWT);
       if (!jwtPayload || !jwtPayload.ctx || !jwtPayload.ctx[0] || !jwtPayload.ctx[0].data) {
-        console.error("capture context JWT 格式錯誤或缺少必要欄位");
-        return Promise.reject(new Error("Invalid capture context JWT"));
+        throw new Error("Invalid capture context JWT");
       }
       const clientLibraryUrl = jwtPayload.ctx[0].data.clientLibrary;
       const integrityValue = jwtPayload.ctx[0].data.clientLibraryIntegrity;
+      console.log("載入 SDK，URL:", clientLibraryUrl);
       return new Promise((resolve, reject) => {
         const script = document.createElement("script");
         script.src = clientLibraryUrl;
         script.integrity = integrityValue;
         script.crossOrigin = "anonymous";
-        script.onload = () => {
-          console.log("SDK script 載入成功");
-          resolve();
-        };
+        script.onload = () => resolve();
         script.onerror = () => reject(new Error("載入 SDK script 失敗"));
         document.head.appendChild(script);
       });
     }
     
-    // 主流程：取得 capture context、載入 SDK、初始化並呈現付款元件
+    async function handleChallenge(challengeUrl, transientToken, price) {
+      const iframe = document.getElementById("challengeIframe");
+      const challengeContainer = document.getElementById("challengeContainer");
+      console.log("處理挑戰，URL:", challengeUrl);
+      
+      // 將挑戰 URL 附加 session 参数以確保後端能識別
+      iframe.src = challengeUrl;
+      challengeContainer.style.display = "block";
+
+      return new Promise((resolve, reject) => {
+        // 監聽 iframe 加載完成並等待挑戰完成
+        iframe.onload = () => {
+          console.log("挑戰 iframe 已加載，等待用戶完成...");
+        };
+
+        // 使用 setInterval 輪詢後端檢查挑戰完成狀態
+        const checkChallengeStatus = setInterval(async () => {
+          try {
+            const response = await fetch('/process-3ds-and-authorize', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ transientToken, price })
+            });
+            const data = await response.json();
+            if (data.status !== "CHALLENGE") {
+              clearInterval(checkChallengeStatus);
+              challengeContainer.style.display = "none";
+              resolve(data);
+            }
+          } catch (error) {
+            clearInterval(checkChallengeStatus);
+            reject(error);
+          }
+        }, 2000); // 每 2 秒檢查一次
+      });
+    }
+    
     async function loadCheckout() {
       try {
-        // 依金額取得 capture context JWT
-        const captureContextJWT = await loadCaptureContext();
-        // 透過 JWT 解析出 clientLibrary 與 integrity 值，動態載入 SDK script
+        let price = document.getElementById("price").value;
+        if (!price || isNaN(price) || Number(price) <= 0) {
+          throw new Error("請輸入有效的金額");
+        }
+        price = Number(price).toFixed(2); // 確保金額是兩位小數
+
+        document.getElementById("result").innerText = "正在處理...";
+        const captureContextJWT = await loadCaptureContext(price);
         await loadSDKFromCaptureContext(captureContextJWT);
         
-        // 確認 SDK 載入後全域函式 Accept 是否存在
         if (typeof Accept === "undefined") {
-          console.error("SDK 載入後找不到 Accept() 函式");
-          document.getElementById("result").innerText = "SDK 載入後找不到 Accept() 函式";
-          return;
+          throw new Error("SDK 載入後找不到 Accept() 函式");
         }
         
-        // 使用 capture context 初始化 Accept 並建立 Unified Payments 物件，然後將付款元件渲染到 #buttonContainer 中
-        Accept(captureContextJWT)
-          .then(accept => accept.unifiedPayments())
-          .then(up => up.show({ containers: { paymentSelection: "#buttonContainer" } }))
-          .then(transientToken => {
-            console.log("取得 transient token:", transientToken);
-            document.getElementById("result").innerText = "Transient Token: " + transientToken;
-            // 你可以在此呼叫後端授權 API，傳送 transientToken 進行後續處理
-          })
-          .catch(error => {
-            console.error("付款流程發生錯誤:", error);
-            document.getElementById("result").innerText = "付款流程錯誤: " + error.message;
-          });
+        const accept = await Accept(captureContextJWT);
+        const up = await accept.unifiedPayments();
+        const transientToken = await up.show({ containers: { paymentSelection: "#buttonContainer" } });
+        console.log("收到 transientToken:", transientToken);
+
+        const response = await fetch('/process-3ds-and-authorize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ transientToken, price })
+        });
+        const data = await response.json();
+
+        if (data.status === "CHALLENGE") {
+          const authResult = await handleChallenge(data.challengeUrl, transientToken, price);
+          document.getElementById("result").innerText = "授權成功:\n" + JSON.stringify(authResult, null, 2);
+        } else {
+          document.getElementById("result").innerText = "授權成功:\n" + JSON.stringify(data, null, 2);
+        }
       } catch (error) {
-        console.error("loadCheckout 發生錯誤:", error);
+        console.error("錯誤:", error);
         document.getElementById("result").innerText = "錯誤: " + error.message;
       }
     }
